@@ -49,6 +49,12 @@
 #include "queue.h"
 
 /**
+ * @brief Internal EP operation
+ * 
+ */
+#define CELL_SKIP_SECURITY_CHECK
+
+/**
  * @brief Define for size of descriptor table
  * 
  */
@@ -58,7 +64,22 @@
  * @brief MQTT Max Topic Length.
  * 
  */
-#define MQTT_MAX_TOPIC_LENGTH    50U
+#define MQTT_MAX_TOPIC_LENGTH    250U
+
+/**
+ * @brief Maximum length of the data packet allowed in a cell queue message
+ *  EPCP_SYSTEM_SIZE        = 19,
+    EPCP_SYSTEM_V2_SIZE     = 9,
+    EPCP_CELL_SIZE          = 10,
+    EPCP_GNSS_SIZE          = 7,
+    EPCP_SI7021_SIZE        = 6,
+    EPCP_BME680_SIZE        = 25,
+    EPCP_ICM20602_SIZE      = 14,
+    EPCP_LSM9DS1_SIZE       = 21,
+    EPCP_VL53L0X_SIZE       = 6,
+    TOTOAL                  = 130, with 13 bytes overhead
+ */
+#define CELLULAR_QUEUE_MSG_MAX_LENGTH   130U
 
 /**
  * @brief Cell carrier defines
@@ -68,6 +89,7 @@
 #define VERIZON 1
 #define ROW     2
 #define AU      3
+#define AUTO    0xFF // ME310G1 and ME910G1 support auto detect
 
 /**
  * @brief Cell technology defines
@@ -77,6 +99,7 @@
 #define CELLULAR_IOT_NBIOT      1   // NB-IoT only
 #define CELLULAR_IOT_CATM1_PREF 2   // CAT-M1 preferred over NB-IoT
 #define CELLULAR_IOT_NBIOT_PREF 3   // NB-IOT preferred over Cat-M1
+#define CELLULAR_IOT_NBIOT_NTN  4   // NB-IoT NTN
 
 /**
  * @brief FOTA Checksum defines
@@ -84,12 +107,6 @@
  */
 #define SUM_ALL         0
 #define CRC32_CHKSM     1
-
-/**
- * @brief Maximum length of the data packet allowed in a cell queue message
- *
- */
-#define CELLULAR_QUEUE_MSG_MAX_LENGTH   500U
 
 /**
  * @brief Size of buffer that holds downlink (shared) attribute string
@@ -100,7 +117,7 @@
  * @brief Define number of HTTP Attributes needed
  * 
  */
-#define num_HTTP_ATTRIBUTES             29
+#define num_HTTP_ATTRIBUTES             5
 
 /**
  * @brief Max attribute length for cell http get
@@ -121,12 +138,6 @@
 #define CELLULAR_ICCID_MAX_SIZE    20U
 
 /**
- * @brief Define for skipping socket query, if applicable
- * 
- */
-//#define CELL_SKIP_SOCKET_QUERY     1   // True equals skip, not defined equals don't skip
-
-/**
  * @brief Threshold for transmission interval to power off cell versus just shutdown socket
  * 
  */
@@ -145,22 +156,17 @@
 #define MAX_GNSS_LONG_LENGTH    11U
 
 /**
- * @brief Cell carrier AT&T.<br>
- *
- */
-#define ATT_PDN    1U /* AT&T and Telit AT&T */
-
-/**
- * @brief Cell carrier Verizon.<br>
- *
- */
-#define VERIZON_PDN    3U /* Verizon */
-
-/**
  * @brief Access point name max size.<br>
  *
  */
 #define CELLULAR_APN_MAX_SIZE    ( 64U )
+
+/**
+ * @brief Payload format.<br>
+ *
+ */
+#define PLAIN_TEXT_PAYLOAD      0 //Compact payload
+#define JSON_PAYLOAD            1 //Json format payload
 
 /**
  * @brief Endpoint address max size
@@ -169,11 +175,40 @@
 #define ENDPOINT_ADDR_MAX_SIZE ( 75U )
 
 /**
- * @brief Payload format.<br>
- *
+ * @brief HTTP/CoAP Method defines
+ * 
  */
-#define PLAIN_TEXT_PAYLOAD      0 //Compact payload
-#define JSON_PAYLOAD            1 //Json format payload
+ #define METHOD_POST    0
+ #define METHOD_GET     1
+
+/**
+ * @brief Cellular carrier, ATT, Verizon, AU, or Auto. Only need for Agora 1.0
+ * 
+ */
+#define CELLULAR_CARRIER    AUTO
+
+/**
+ * @brief TLS Security defined
+ * 
+ */
+#define TLS_ANONYMOUS   0
+#define TLS_SAS_TOKENS  1
+#define TLS_X509        2
+
+/**
+ * @brief Cell shutdown state between data passes
+ * 
+ */
+#define SOCKET_OPEN         0
+#define MODEM_ON            1
+#define MODEM_OFF           2
+
+/**
+ * @brief Protocol defined needed for cell library
+ * 
+ */
+#define PROTOCOL_HTTPS                             0
+#define PROTOCOL_MQTTS                             1
 
 /**
  * @ingroup cellular_datatypes_enums
@@ -198,22 +233,6 @@ typedef enum CellularPdnAuthType
     CELLULAR_PDN_AUTH_CHAP,       /**< Challenge Handshake Authentication Protocol (CHAP). */
     CELLULAR_PDN_AUTH_PAP_OR_CHAP /**< PAP or CHAP. */
 } CellularPdnAuthType_t;
-
-/**
- * @ingroup cellular_datatypes_paramstructs
- * @brief Represents a Cellular BLE config.
- */
-typedef struct CellularBLEConfig
-{
-    uint8_t CellularSocketPdnContextId;                        /**< PDN Context ID. */
-    CellularPdnContextType_t pdnContextType;                   /**< PDN Context type. */
-    char apnName[ CELLULAR_APN_MAX_SIZE + 1 ];                 /**< APN name. */
-} CellularBLEConfig_t;
-
-/**
- * @brief gnss Status.
- */
-extern bool gnssStatus;
 
 /**
  * @brief Cell semaphore and queue
@@ -246,32 +265,10 @@ typedef enum CellStatus
     CellSocketFail,         /*!< @brief Failed to configure and connect to socket. */
     CellLostService,        /*!< @brief Cell service lost during runtime. */
     CellFailToSend,         /*!< @brief Failed to send data. */
-    CellFailToRec           /*!< @brief Failed to receive data. */
+    CellFailToRec,          /*!< @brief Failed to receive data. */
+    CellBusy                /*!< @brief Cell busy. */
 } CellStatus_t;
 extern CellStatus_t cellStatus;
-
-/**
- * @ingroup cellular_datatypes_enums
- * @brief Status code returns from APIs.
- */
-typedef enum CellularError
-{
-    CELLULAR_SUCCESS = 0,            /**< The operation was successful. */
-    CELLULAR_INVALID_HANDLE,         /**< Invalid handle. */
-    CELLULAR_MODEM_NOT_READY,        /**< The modem is not ready yet. */
-    CELLULAR_LIBRARY_NOT_OPEN,       /**< The cellular library is not open yet. */
-    CELLULAR_LIBRARY_ALREADY_OPEN,   /**< The cellular library is already open. */
-    CELLULAR_BAD_PARAMETER,          /**< One or more of the input parameters is not valid. */
-    CELLULAR_NO_MEMORY,              /**< Memory allocation failure. */
-    CELLULAR_TIMEOUT,                /**< The operation timed out. */
-    CELLULAR_SOCKET_CLOSED,          /**< The supplied socket is already closed. */
-    CELLULAR_SOCKET_NOT_CONNECTED,   /**< The supplied socket is not connected. */
-    CELLULAR_INTERNAL_FAILURE,       /**< The Cellular library internal failure. */
-    CELLULAR_RESOURCE_CREATION_FAIL, /**< Resource creation for Cellular library failed. */
-    CELLULAR_UNSUPPORTED,            /**< The operation is not supported. */
-    CELLULAR_NOT_ALLOWED,            /**< The operation is not allowed. */
-    CELLULAR_UNKNOWN                 /**< Any other error other than the above mentioned ones. */
-} CellularError_t;
 
 /**
  * @brief Structure for storing cell parameters
@@ -279,25 +276,12 @@ typedef enum CellularError
  */
 typedef struct cellParam {
     char appVersion[9];                             /* Application version, shared with cell library */
-    uint8_t carrier;                                /* Cellular SIM carrier */
     uint8_t technology;                             /* Cellular technology */
-    uint32_t gnssInterval;                          /* GNSS interval */
-    uint32_t gnssTimeout;                           /* GNSS timeout in 10s of seconds */
     uint8_t payloadFormat;                          /* Cell queue payload format */
-    char brokerAddrPost[100];                       /* Cellular broker address for POST */
-    char brokerAddrGet[100];                        /* Cellular broker address for GET */
-    bool gnssStatus;                                /* GNSS enable/disable */
-    char serverAddrPrefixPost[50];                  /* HTTP address prefix Post */
-    char serverAddrPrefixGet[50];                   /* HTTP address prefix Get */
-    char serverDownloadSuffix[50];                  /* HTTP download suffix */
-    char serverTelemSuffix[65];                     /* HTTP telemetry suffix */
-    char serverAttribSuffix[50];                    /* HTTP attribute suffix */
-    bool accessTokenInPathPost;                     /* Flag to mark whether access token in server url path for POST */
-    bool accessTokenInPathGet;                      /* Flag to mark whether access token in server url path for GET */
     char rootCA1[2000];                             /* SSL root CA */
     char cert[2000];                                /* SSL certificate */
     char pvtKey[2000];                              /* SSL private key */
-    char mqttTopicString[MQTT_MAX_TOPIC_LENGTH];    /* MQTT topic string */
+    char symmetricKey[500];                         /* SSL SaS Token */
     uint8_t checksumMethod;                         /* FOTA checksum method */
     uint32_t fotaFlashStart;                        /* FOTA flash address start */
     uint32_t fotaDescrTblStart;                     /* FOTA descriptor table start */
@@ -319,9 +303,11 @@ typedef struct cellDiag {
     float long_float;                           /**< GNSS longitude value, represented as a float. */
     float lat_float;                            /**< GNSS latitude value represented as a float. */
     uint8_t fix;                                /**< GNSS fix value. */
-    uint32_t fixTime;                           /**< GNSS fix time in epoch seconds. */
+    uint32_t fixTime;                           /**< GNSS fix time in epoch seconds */
     uint8_t satellites;                         /**< GNSS number of satellites. */
-    uint16_t restartCounter;                    /**< Modem transmit issue counter. */
+    float gtpAccuracy;                          /**< GTP Accuracy of location. */
+    float gtpLongFloat;                         /**< GTP Longitude of location. */
+    float gtpLatFloat;                          /**< GTP Latitude of location. */
     char iccid[ CELLULAR_ICCID_MAX_SIZE + 1 ];  /**< SIM ICCID. */
     char imei[ CELLULAR_IMEI_MAX_SIZE + 1 ];    /**< Modem IMEI. */
 } cellDiag;
@@ -351,34 +337,194 @@ typedef struct
     uint32_t checksum;                           /* 32 bit checksum. */
 } ImageDescriptor_t;
 
+typedef enum CellRegStatus
+{
+    REG_STATUS_NOT_REGISTERED = 0,               /**< Not registered searching network registration status. */
+    REG_STATUS_REGISTERED_HOME = 1,              /**< Registered home network registration status. */
+    REG_STATUS_NOT_REGISTERED_SEARCHING = 2,     /**< Not registered searching network registration status. */
+    REG_STATUS_REGISTRATION_DENIED = 3,          /**< Registration denied network registration status. */
+    REG_STATUS_UNKNOWN = 4,                      /**< Unknown network registration status. */
+    REG_STATUS_ROAMING_REGISTERED = 5,           /**< Roaming registered network registration status. */
+    REG_STATUS_HOME_SMS_ONLY_REGISTERED = 6,     /**< Home SMS only registered network registration status. */
+    REG_STATUS_SMS_ONLY_ROAMING_REGISTERED = 7,  /**< SMS only roaming registered network registration status. */
+    REG_STATUS_ATTACHED_EMERG_SERVICES_ONLY = 8, /**< Attached emergency service only network registration status. */
+    REG_STATUS_MAX                               /**< The max supported number for registration status. */
+} CellRegStatus_t;
+
 /**
  * @brief Used to send data from the main application through the cellular queue
  * 
  */
 typedef struct{
-    char        data[CELLULAR_QUEUE_MSG_MAX_LENGTH];  /** < Pointer to the JSON string */
+    char        data[CELLULAR_QUEUE_MSG_MAX_LENGTH];    /** < Pointer to the JSON string */
     uint16_t    size;   /** < Size of the JSON string */
-    uint8_t     *comm_conf; /** < Pointer to the current communication path configuration */
-    bool        has_gnss;   /** < Indicates whether the message includes GNSS data. 0 for no, 1 for yes **/
-    bool        cell_stat;  /** < Indicates whether the message has been successfully transmitted over cell. 0 for no, 1 for yes */
-    bool        lora_stat;  /** < Indicates whether the message has been successfully transmitted over LoRa. 0 for no, 1 for yes */
-    //uint8_t     cell_tries; /** < Number of times cell has tried to send this message but failed */
-    //uint8_t     lora_tries; /** < Number of times lora has tried to send this message but failed */
 } cell_queue_msg;
 
- /* Set in application to one of the above communciation configurations */
-extern uint8_t comm_conf;
-
 /**
- * @brief Callback used to inform about the response of an AT command sent
- * using Cellular_ATCommandRaw API.
+ * @brief Function to register modem to cellular network. Will return when registered or timeout expires
  *
- * @param[in] cellTransInt Interval to transmit cellular data.
+ * @param[in] cellCarrier Cell carrier.
  * @param[in] regTimeout Cell registration timeout.
  * 
  * @return enum return.
  */
-extern CellStatus_t runCellular( uint32_t cellTransInt, uint32_t regTimeout );
+extern CellStatus_t registerCellular( uint8_t cellCarrier, uint32_t regTimeout );
+
+/**
+ * @brief Function to check cell registration status
+ * 
+ * @return enum return.
+ */
+extern CellRegStatus_t regStatus( void );
+
+/**
+ * @brief Set GNSS operation
+ *
+ * @param[in] status Set GNSS status. True: GNSS enable, False: GNSS disable
+ * 
+ * @return enum return.
+ */
+extern CellStatus_t setGNSS( bool status );
+
+/**
+ * @brief Get GNSS Status
+ *
+ * @param[out] satellites Number of satellites vehicles seen by modem on fix attempt.
+ * 
+ * @return Fix. Fix >= 2, the fixed obtained
+ */
+extern uint8_t statusGNSS( uint8_t *satellites );
+
+/**
+ * @brief Function to open cellular connection on modem
+ *
+ * @param[in] endpointAddr Address to server
+ * @param[in] gtpStatus Bool to let cell library know if gtp location should be attempted
+ * 
+ * @return enum return.
+ */
+extern CellStatus_t connectCell( uint8_t *endpointAddr, bool gtpStatus );
+
+/**
+ * @brief Function to close cellular connection on modem
+ *
+ * @param[in] sleepMode Sleep mode in between data transmissions.
+ * 
+ * @return N/A.
+ */
+extern void closeCell( uint8_t sleepMode );
+
+/**
+ * @brief Function to send/receive data over CoAP
+ *
+ * @param[in] method POST or GET
+ * @param[in] endpointAddr Address to server
+ * @param[in] pathPrefix Prefix of server path
+ * @param[in] pathSuffix Suffix of server path (entire path if tokenInPath equals false)
+ * @param[in] tokenInPath Access token in path (true) or not (false)
+ * @param[out] fotaAvailable Bool return for if FOTA is available on server
+ * 
+ * @return enum return.
+ */
+extern CellStatus_t sendCoAPMsg(uint8_t method, uint8_t *endpointAddr, uint8_t *pathPrefix, uint8_t* pathSuffix, bool tokenInPath, bool *fotaAvailable);
+
+/**
+ * @brief Function to send/receive data over HTTP
+ *
+ * @param[in] method POST or GET
+ * @param[in] endpointAddr Address to server
+ * @param[in] pathPrefix Prefix of server path
+ * @param[in] pathSuffix Suffix of server path (entire path if tokenInPath equals false)
+ * @param[in] tokenInPath Access token in path (true) or not (false)
+ * @param[out] fotaAvailable Bool return for if FOTA is available on server
+ * 
+ * @return enum return.
+ */
+extern CellStatus_t sendHttpMsg(uint8_t method, uint8_t *endpointAddr, uint8_t *pathPrefix, uint8_t* pathSuffix, bool tokenInPath, bool *fotaAvailable);
+
+/**
+ * @brief Function to send/receive data over HTTP with TLS
+ *
+ * @param[in] method POST or GET
+ * @param[in] endpointAddr Address to server
+ * @param[in] pathPrefix Prefix of server path
+ * @param[in] pathSuffix Suffix of server path (entire path if tokenInPath equals false)
+ * @param[in] tokenInPath Access token in path (true) or not (false)
+ * @param[in] securityType SaS token, anonomyous, or x509
+ * @param[out] respSize Size of response, if GET
+ * @param[out] respBody Response contents, if GET
+ * 
+ * @return enum return.
+ */
+extern CellStatus_t sendHttpTLSMsg(uint8_t method, uint8_t *endpointAddr, uint8_t *pathPrefix, uint8_t* pathSuffix, bool tokenInPath, uint8_t securityType, int32_t *respSize, uint8_t **respBody);
+
+/**
+ * @brief Function to run FOTA from Thingsboard
+ *
+ * @param[in] endpointAddr Address to server
+ * @param[in] pathPrefix Prefix of server path
+ * @param[in] pathSuffix Suffix of server path
+ * 
+ * @return N/A
+ */
+extern void runThingsboardFOTA(uint8_t *endpointAddr, uint8_t *pathPrefix, uint8_t* pathSuffix);
+
+/**
+ * @brief Function to run AWS Task. Send data in cell queue. Receives data from cloud. Runs OTA.
+ *
+ * @param[in] endpointAddr Address to server
+ * @param[in] pathPrefix Prefix of server path
+ * @param[in] pathSuffix Suffix of server path (entire path if tokenInPath equals false)
+ * @param[in] tokenInPath Access token in path (true) or not (false)
+ * @param[in] persistent Persistent MQTT connection
+ * @param[in] gnssInterval If persistent equals true, then interval between GNSS fixes, otherwise not used
+ * @param[in] gnssTimeout If persistent equals true, then timeout for obtaining GNSS fix, otherwise not used
+ * @param[in] gnssStatus If persistent equals true, then status of GNSS engine, otherwise not used
+ * 
+ * @return N/A.
+ */
+extern void runAwsMqttTlsTask( uint8_t *endpointAddr, uint8_t *pathPrefix, uint8_t* pathSuffix, bool tokenInPath, bool persistent, uint32_t gnssInterval, uint32_t gnssTimeout, bool gnssStatus );
+
+/**
+ * @brief Function to regenerate Azure SaS token
+ *
+ * @param[in] endpointAddr Address to server
+ * @param[in] expireTime Time for SaS token to expire, in seconds
+ * 
+ * @return enum return.
+ */
+extern CellStatus_t azureRegenerateSaSToken(uint8_t *endpointAddr, uint32_t expireTime);
+
+/**
+ * @brief Function to run Azure Task. Send data in cell queue.
+ *
+ * @param[in] endpointAddr Address to server
+ * @param[in] pathPrefix Prefix of server path
+ * @param[in] pathSuffix Suffix of server path (entire path if tokenInPath equals false)
+ * @param[in] tokenInPath Access token in path (true) or not (false)
+ * @param[in] securityType SaS token or x509
+ * @param[in] persistent Persistent MQTT connection
+ * @param[in] gnssInterval If persistent equals true, then interval between GNSS fixes, otherwise not used
+ * @param[in] gnssTimeout If persistent equals true, then timeout for obtaining GNSS fix, otherwise not used
+ * @param[in] gnssStatus If persistent equals true, then status of GNSS engine, otherwise not used
+ * 
+ * @return N/A.
+ */
+extern void runAzureMqttTlsTask( uint8_t *endpointAddr, uint8_t *pathPrefix, uint8_t* pathSuffix, bool tokenInPath, uint8_t securityType, bool persistent, uint32_t gnssInterval, uint32_t gnssTimeout, bool gnssStatus );
+
+/**
+ * @brief Close non persistent mqtt cell connection
+ * 
+ * @return enum return.
+ */
+extern CellStatus_t closeMQTTCellular( void );
+
+/**
+ * @brief Get MQTT Connection status
+ * 
+ * @return enum return.
+ */
+extern CellStatus_t statusMQTTCellular( uint8_t *endpointAddr );
 
 /**
  * @brief Query cellular diagnostics
@@ -393,28 +539,32 @@ extern CellStatus_t queryCellularDiag( cellDiag *params );
  * @brief Function used to set cellular parameters.
  *
  * @param[in] params Pointer to structure containing all cell initialization parameters.
- * @param[in] pdnConfig Cell device pdp configuration to send and receive data from in the cloud.
+ * @param[in] apnName APN Name.
+ * @param[in] sleepMode Sleep mode selection from application
  *
- * @return True if successful, false if failed.
+ * @return enum return.
  */
-extern bool cellInit(cellParam *params, CellularBLEConfig_t *pdnConfig);
+extern CellStatus_t cellInit(cellParam *params, uint8_t *apnName, uint8_t sleepMode);
 
 /**
- * @brief Function used to retrieve HTTP attributes.
+ * @brief Function used to retrieve attributes.
  *
- * @param[in] index Index for HTTP attribute.
- * @param[in] value Value for HTTP attribute.
+ * @param[in] index Index for attribute.
+ * @param[in] value Value for attribute.
  *
  * @return N/A.
  */
-extern void getHTTPAttributes( uint8_t index, char* value );
+extern void getAttributes( uint8_t index, char* value );
 
 /**
- * @brief Cell libray callback to alert app that fix attained, app can append to message if desired.
+ * @brief Cell libray callback to alert app that fix attained, app can add queue message if desired.
  *
+ * @param[in] status Pass or fail fix attempt.
+ * 
  * @return N/A.
  */
-extern void appendMsgWithGNSS( void );
+extern void addGnssQueueMsg( bool status );
+
 
 /* *INDENT-OFF* */
 #ifdef __cplusplus

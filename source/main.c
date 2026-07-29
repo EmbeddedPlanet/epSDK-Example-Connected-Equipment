@@ -66,6 +66,9 @@
 #include "compact_payload_config.h"
 #include "epcp_builder_ce.h"
 #include "LoRaWAN.h"
+#if defined(THINGSBOARD_HTTPS_INTEGRATION) || defined(AZURE_MQTTS_X509) || defined(AWS_MQTTS_X509) || defined(AWS_HTTPS_X509) || defined(AZURE_MQTTS_SAS) || defined(AZURE_HTTPS_SAS)
+#include "nrf_crypto.h"
+#endif
 
 //Activate / deactivate onboard sensors
 #define SI7021_ACTIVE   1
@@ -75,7 +78,7 @@
 
 #define mainLED_TASK_STACK_SIZE             128
 #define mainSAMPLE_TASK_STACK_SIZE          1024
-#define mainCell_TASK_STACK_SIZE            4500
+#define mainCell_TASK_STACK_SIZE            8196
 #define LORAWAN_CLASSA_TASK_STACK_SIZE      2048
 #define LORAWAN_CLASSA_TASK_PRIORITY        ( tskIDLE_PRIORITY + 1 )
 #define CELL_QUEUE_TIMEOUT                  pdMS_TO_TICKS(3000)                     /** Time to wait on queue before moving on to the next sample */
@@ -89,10 +92,10 @@ SemaphoreHandle_t xSensPwrEnSemaphore;
 QueueHandle_t xCellQueue;
 QueueHandle_t xLoraQueue;
 TaskHandle_t ledTaskHandle;
+TaskHandle_t cellularTaskHandle;
 TaskHandle_t sensorSampleTaskHandle;
 TaskHandle_t loraTaskHandle;
-
-CellStatus_t cell_status;
+TaskHandle_t mqttTaskHandle;
 
 system_info_struct system_info;
 
@@ -100,6 +103,9 @@ system_info_struct system_info;
 uint8_t comm_conf = COMM_CELL_ONLY;
 
 uint32_t cellTransInt = MIN_TRANS_INTERVAL;
+
+// Frame counter for payload
+static uint8_t frameCounter = 0;
 
 #if ICM20602_ACTIVE
 /* Empty ICM struct */
@@ -116,16 +122,13 @@ MCP23008 mcp;
 static const nrfx_twi_t twi = NRFX_TWI_INSTANCE(TWI_INSTANCE_ID);
 
 /* Initial PDP config */
-CellularBLEConfig_t pdnConfig = { ATT_PDN, CELLULAR_PDN_CONTEXT_IPV4, "" };
+CellularBLEConfig_t pdnConfig = { '\0' };
 
 /* Task for testing dequeueing of data from the BLE json queue and adding to cell data queue */
 void bleToCellTask(void *pvParameters);
 
 /* Task for reading local sensors and adding to cell data queue */
 void sensorSampleTask(void *pvParameters);
-
-/* The task function to setup cellular with thread ready environment. */
-static void CellularTask( void * pvParameters );
 
 /* Miscellaneous initialization including preparing the logging and cell. */
 static void prvMiscInitialization( void );
@@ -147,82 +150,6 @@ void twi_init (void)
     APP_ERROR_CHECK(err_code);
 
     nrfx_twi_enable(&twi);
-}
-
-//Cellular communication task
-static void CellularTask( void * pvParameters )
-{
-    bool first_run = true;
-    bool retCellular = false;
-    cellParam cellParams = {0};
-    uint32_t regTimeout = 900; // 900s registration timeout
-
-    // Set cell parameters, must be called prior to scheduler starting if using SSL/TLS due to NRF SDK incompatibilities
-    strncpy(cellParams.appVersion, system_info.updateVerStr, strlen(system_info.updateVerStr));
-    strncpy(cellParams.brokerAddrPost, IOT_BROKER_ADDRESS_POST, strlen(IOT_BROKER_ADDRESS_POST));
-    strncpy(cellParams.brokerAddrGet, IOT_BROKER_ADDRESS_GET, strlen(IOT_BROKER_ADDRESS_GET));
-    cellParams.carrier = CELLULAR_CARRIER;
-    strncpy(cellParams.cert, CERTIFICATE, sizeof(CERTIFICATE));
-    cellParams.gnssStatus = TELIT_GNSS_STATUS;
-    cellParams.gnssInterval = GNSS_ATTEMPT_INTERVAL;
-    cellParams.gnssTimeout = GNSS_TIMEOUT;
-    strncpy(cellParams.serverAddrPrefixPost, SERVER_ADDR_PREFIX_POST, strlen(SERVER_ADDR_PREFIX_POST));
-    strncpy(cellParams.serverAddrPrefixGet, SERVER_ADDR_PREFIX_GET, strlen(SERVER_ADDR_PREFIX_GET));
-    strncpy(cellParams.serverAttribSuffix, SERVER_ADDR_SUFFIX_ATTR, strlen(SERVER_ADDR_SUFFIX_ATTR));
-    strncpy(cellParams.serverDownloadSuffix, SERVER_ADDR_SUFFIX_FOTA, strlen(SERVER_ADDR_SUFFIX_FOTA));
-    strncpy(cellParams.serverTelemSuffix, SERVER_ADDR_SUFFIX_TELE, strlen(SERVER_ADDR_SUFFIX_TELE));
-    cellParams.accessTokenInPathPost = SERVER_PATH_ACCESS_TOKEN_POST_ENABLED;
-    cellParams.accessTokenInPathGet = SERVER_PATH_ACCESS_TOKEN_GET_ENABLED;
-    strncpy(cellParams.pvtKey, PVT_KEY, sizeof(PVT_KEY));
-    strncpy(cellParams.rootCA1, ROOT_CA1, sizeof(ROOT_CA1));
-    strncpy(cellParams.mqttTopicString, MQTT_TOPIC, sizeof(MQTT_TOPIC));
-    cellParams.technology = CELLULAR_TECH;
-    cellParams.checksumMethod = otapal_CHECKSUM_METHOD;
-    cellParams.fotaFlashStart = otapal_FLASH_START;
-    cellParams.fotaDescrTblStart = otapal_DESCRIPTOR_START;
-    cellParams.fotaBankSize = otapal_BANK_SIZE;
-    cellParams.cellOnOffPin = CELL_ON_OFF;
-    cellParams.cellPwrEnPin = CELL_PWR_EN;
-    cellParams.cellRTSPin = CELL_RTS_PIN_NUMBER;
-    cellParams.payloadFormat = CELL_PAYLOAD_FORMAT;
-
-    // Initialize cell
-    retCellular = cellInit( &cellParams, &pdnConfig );    
-
-    if( retCellular != true )
-    {
-        DBGI("Cellular failed to initialize.\r\n");
-    }
-    else
-    {
-        DBGI( ( "Cellular successfully initialized.\r\n" ) );  
-    }
-    //runCellular once prior to loop because first transmission is configured to never try for a GNSS fix
-    cellStatus = runCellular(cellTransInt, regTimeout);
-    for(;;)
-    {
-        vTaskDelay(pdMS_TO_TICKS(15000));
-        while(xQueuePeek(xCellQueue, NULL, 0) == pdTRUE){
-            if(!first_run){
-                // Reenable LED task
-                led_resume();
-                vTaskResume( ledTaskHandle );
-            }else{
-                first_run = false;
-            }
-
-            //This call of function to get unit registered to network and connected to desired endpoint address
-            cell_status = runCellular(cellTransInt, regTimeout);
-
-            // Suspend LED task
-            vTaskSuspend( ledTaskHandle );
-            // Enable debug out for LED
-            led_pause();
-            // Shutoff any LEDs, turn to input
-            nrf_gpio_cfg_default(NRF_GPIO_PIN_MAP(0, 8));
-        }        
-    }
-    vTaskDelete( NULL );
 }
 
 /*-----------------------------------------------------------*/
@@ -376,7 +303,7 @@ static void prvMiscInitialization( void )
         system_info.updateVerMaj = ( ( xDescriptor.updateVersion >> 24 ) & 0xFF );
         system_info.updateVerMin = ( ( xDescriptor.updateVersion >> 16 ) & 0xFF );
         system_info.updateVerBui = ( xDescriptor.updateVersion & 0xFFFF );
-        sprintf( system_info.updateVerStr,"%02d.%02d.%02ld", system_info.updateVerMaj, system_info.updateVerMin, system_info.updateVerBui );        
+        sprintf( system_info.updateVerStr,"%02x.%02x.%02x", system_info.updateVerMaj, system_info.updateVerMin, system_info.updateVerBui );       
     }
     else
     {
@@ -385,7 +312,7 @@ static void prvMiscInitialization( void )
         system_info.updateVerMin = VERSION_MINOR;
         system_info.updateVerBui = VERSION_BUILD;
         // Set string version
-        sprintf( system_info.updateVerStr,"%02d.%02d.%02ld", system_info.updateVerMaj, system_info.updateVerMin, system_info.updateVerBui );
+        sprintf( system_info.updateVerStr,"%02x.%02x.%02x", system_info.updateVerMaj, system_info.updateVerMin, system_info.updateVerBui );
     }
 
     // Read production table in external flash
@@ -506,6 +433,39 @@ static void prvMiscInitialization( void )
         memcpy(maxCalString,LORA_0_5_CH_4_CAL_MAX,sizeof(LORA_0_5_CH_4_CAL_MAX));
         setChannelStatus(4, CH_TYPE_0_5, true, minCalString, maxCalString);
         #endif
+
+        /* Initialize LoRa parameters */
+        loraParam loraParams = {0};
+        // Set lora parameters, must be called prior to scheduler starting if using SSL/TLS due to NRF SDK incompatibilities
+        loraParams.region = LORAWAN_REGION;
+        loraParams.appPort = LORAWAN_APP_PORT;
+        loraParams.confSend = LORAWAN_CONFIRMED_SEND;
+        loraParams.jitterMS = LORAWAN_APPLICATION_JITTER_MS;
+        loraParams.rxWindowMS = CLASSA_RECEIVE_WINDOW_DURATION_MS;
+        loraParams.txIntervalSec = cellTransInt;
+        loraParams.mosi = SER_CON_SPIS_MOSI_PIN;
+        loraParams.miso = SER_CON_SPIS_MISO_PIN;
+        loraParams.sck = SER_CON_SPIS_SCK_PIN;
+        loraParams.subBand = subbandDefault;
+        loraParams.maxJoinAttempts = lorawanConfigMAX_JOIN_ATTEMPTS;
+        loraParams.commInterface = comm_conf;
+        memcpy(loraParams.devEUI, devEUIDefault, sizeof(devEUI));
+        memcpy(loraParams.joinEUI, joinEUIDefault, sizeof(joinEUI));
+        memcpy(loraParams.appKey, appKeyDefault, sizeof(appKey));
+
+        // Initialize LoRa parameters
+        if( loraConfig( loraParams ) == false )
+        {
+            DBGI( "LoRa parameters failed to initialize" );
+        }
+        else
+        {
+            DBGI( "LoRa parameters successfully initialized" );  
+        }
+
+        /* Add user tasks */
+        xTaskCreate( vLorawanClassATask, "LoRaWanClassA", LORAWAN_CLASSA_TASK_STACK_SIZE, NULL, LORAWAN_CLASSA_TASK_PRIORITY, &loraTaskHandle );
+
     }
     else if(comm_conf == COMM_CELL_ONLY){
         // Cell needs a couple of seconds before starting
@@ -524,11 +484,24 @@ static void prvMiscInitialization( void )
             DBGE("xCellQueue creation failed!");
         }
 
-        #if defined(AZURE_MQTT_X509) || defined(AWS_MQTT_X509)
+        #if defined(THINGSBOARD_HTTPS_INTEGRATION) || defined(AZURE_MQTTS_X509) || defined(AWS_MQTTS_X509) || defined(AWS_HTTPS_X509) || defined(AZURE_MQTTS_SAS) || defined(AZURE_HTTPS_SAS)
         //If protocol is MQTT, then initialize crypto here
         if( nrf_crypto_init() != NRF_SUCCESS)
         {
             DBGE(("Failed to initialize nrf crypto"));
+        }
+        #endif
+
+        #if defined(AZURE_MQTTS_X509) || defined(AWS_MQTTS_X509)|| defined(AZURE_MQTTS_SAS)
+        //If protocol is MQTT and persistent then create task to manage connection
+        if( PERSISTENT_CONNECT_FLAG == false )
+        {
+            xTaskCreate( mqttTask,
+                        "mqttTask",
+                        MQTT_TASK_STACK_SIZE,
+                        NULL,
+                        tskIDLE_PRIORITY+2,
+                        &mqttTaskHandle );
         }
         #endif
 
@@ -538,40 +511,8 @@ static void prvMiscInitialization( void )
                     mainCell_TASK_STACK_SIZE,
                     NULL,
                     tskIDLE_PRIORITY+2,
-                    NULL );
+                    &cellularTaskHandle );
     }
-
-    /* Initialize LoRa parameters */
-    loraParam loraParams = {0};
-    // Set lora parameters, must be called prior to scheduler starting if using SSL/TLS due to NRF SDK incompatibilities
-    loraParams.region = LORAWAN_REGION;
-    loraParams.appPort = LORAWAN_APP_PORT;
-    loraParams.confSend = LORAWAN_CONFIRMED_SEND;
-    loraParams.jitterMS = LORAWAN_APPLICATION_JITTER_MS;
-    loraParams.rxWindowMS = CLASSA_RECEIVE_WINDOW_DURATION_MS;
-    loraParams.txIntervalSec = cellTransInt;
-    loraParams.mosi = SER_CON_SPIS_MOSI_PIN;
-    loraParams.miso = SER_CON_SPIS_MISO_PIN;
-    loraParams.sck = SER_CON_SPIS_SCK_PIN;
-    loraParams.subBand = subbandDefault;
-    loraParams.maxJoinAttempts = lorawanConfigMAX_JOIN_ATTEMPTS;
-    loraParams.commInterface = comm_conf;
-    memcpy(loraParams.devEUI, devEUIDefault, sizeof(devEUI));
-    memcpy(loraParams.joinEUI, joinEUIDefault, sizeof(joinEUI));
-    memcpy(loraParams.appKey, appKeyDefault, sizeof(appKey));
-
-    // Initialize LoRa parameters
-    if( loraConfig( loraParams ) == false )
-    {
-        DBGI( "LoRa parameters failed to initialize" );
-    }
-    else
-    {
-        DBGI( "LoRa parameters successfully initialized" );  
-    }
-
-    /* Add user tasks */
-    xTaskCreate( vLorawanClassATask, "LoRaWanClassA", LORAWAN_CLASSA_TASK_STACK_SIZE, NULL, LORAWAN_CLASSA_TASK_PRIORITY, &loraTaskHandle );
 
     //Create semaphore for SPI
     xSPISemaphore = xSemaphoreCreateBinary();
@@ -588,7 +529,7 @@ static void prvMiscInitialization( void )
     ep_ble_central_init();
 #endif    
 
-    uninit_uart(MAIN_LOOP); //comment out to prevent sleep
+    //uninit_uart(MAIN_LOOP); //comment out to prevent sleep
 }
 
 #if BLE_ACTIVE
@@ -636,9 +577,6 @@ void sensorSampleTask(void *pvParameters)
     float adc_0_5_ch3 = 0.0;
     float adc_0_5_ch4 = 0.0;
 
-    // Frame counter for payload
-    static uint8_t frameCounter = 0;
-
     while(1){
         nrfx_err_t err;    
                  
@@ -655,6 +593,38 @@ void sensorSampleTask(void *pvParameters)
         sensorPwrEnConfig(true);
         vTaskDelay(pdMS_TO_TICKS(20));
 
+        //Get latest cell diagnostic values
+        cellDiag parameters = {'\0'};
+        if( comm_conf == COMM_CELL_ONLY){
+            //Get latest cell diagnostic values
+            if( queryCellularDiag(&parameters) != CellSuccess )
+            {
+                /* Do not send if unable to attain values */
+                continue;
+            }
+
+            //Loop and give time for IMEI during power up
+            uint8_t loopCnt = 0;
+            DBGI("Waiting for IMEI to be received");
+            while( parameters.imei[0] == 0 && parameters.imei[15] == 0 )
+            {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                queryCellularDiag(&parameters);
+                loopCnt++;
+                if(loopCnt > 240)
+                {
+                    break;
+                }
+            }
+            //Cannot send data on this loop if IMEI is unavailable
+            if(loopCnt > 240)
+            {
+                DBGE("No IMEI to receive");
+                continue;
+            }
+            DBGI("IMEI received");
+        }
+
         //Init MCP23008 I/O expander
         mcp23008_init(&mcp, 35, twi);
         mcp23008_direction(&mcp, MCP23008_GPIO_ALL_OUTPUT);
@@ -669,22 +639,12 @@ void sensorSampleTask(void *pvParameters)
         icm20602_init(&icm, ICM20602_ADDR_LOW, twi);
         #endif 
 
+        parseDownlink();
+
         uint64_t ts = get_time_s();
 
-        //Get latest cell diagnostic values
-        cellDiag parameters = {'\0'};
-        if( comm_conf == COMM_CELL_ONLY){
-            parseDownlink();
-
-            if(queryCellularDiag(&parameters) != CELLULAR_SUCCESS )
-            {
-                /* Do not send if unable to attain values */
-                continue;
-            }
-        }
-
         //Increment frame counter or roll over if needed
-        frameCounter++;
+        frameCounter = (uint8_t) (frameCounter + 1);
 
         #if SI7021_ACTIVE
         htu21_init(twi);
@@ -737,40 +697,97 @@ void sensorSampleTask(void *pvParameters)
         union epcp_convert_type ct;
 
         // Initialize SPI and takes ADC readings
-        if(xSemaphoreTake(xSPISemaphore, pdMS_TO_TICKS(60000)) == pdTRUE){
+        if(xSemaphoreTake(xSPISemaphore, pdMS_TO_TICKS(5000)) == pdTRUE){
             //Power up and Init ADC
             err= adc_init(&mcp);
             if(err != NRFX_SUCCESS){
                 DBGE("ADC init failure! Err: %d", err);
             }
+            else{
+                //Add System data to subpacket
+                adc_batt = adc_sample(CE_ADC_BATT);
 
-            //Add System data to subpacket
-            adc_batt = adc_sample(CE_ADC_BATT);
+                //Add Connected Equipment ADC data to subpacket
+                if(adc_channels[CE_ADC_4_20_CH1].enabled){
+                    adc_4_20_ch1 = adc_sample(CE_ADC_4_20_CH1);
+                }
+                if(adc_channels[CE_ADC_4_20_CH2].enabled){
+                    adc_4_20_ch2 = adc_sample(CE_ADC_4_20_CH2);
+                }
+                if(adc_channels[CE_ADC_4_20_CH3].enabled){
+                    adc_4_20_ch3 = adc_sample(CE_ADC_4_20_CH3);
+                }
+                if(adc_channels[CE_ADC_4_20_CH4].enabled){
+                    adc_4_20_ch4 = adc_sample(CE_ADC_4_20_CH4);
+                }
+                if(adc_channels[CE_ADC_0_5_CH1].enabled){
+                    adc_0_5_ch1 = adc_sample(CE_ADC_0_5_CH1);
+                }
+                if(adc_channels[CE_ADC_0_5_CH2].enabled){
+                    adc_0_5_ch2 = adc_sample(CE_ADC_0_5_CH2);
+                }
+                if(adc_channels[CE_ADC_0_5_CH3].enabled){
+                    adc_0_5_ch3 = adc_sample(CE_ADC_0_5_CH3);
+                }
+                if(adc_channels[CE_ADC_0_5_CH4].enabled){
+                    adc_0_5_ch4 = adc_sample(CE_ADC_0_5_CH4);
+                }
 
-            //Add Connected Equipment ADC data to subpacket
-            if(adc_channels[CE_ADC_4_20_CH1].enabled){
-                adc_4_20_ch1 = adc_sample(CE_ADC_4_20_CH1);
-            }
-            if(adc_channels[CE_ADC_4_20_CH2].enabled){
-                adc_4_20_ch2 = adc_sample(CE_ADC_4_20_CH2);
-            }
-            if(adc_channels[CE_ADC_4_20_CH3].enabled){
-                adc_4_20_ch3 = adc_sample(CE_ADC_4_20_CH3);
-            }
-            if(adc_channels[CE_ADC_4_20_CH4].enabled){
-                adc_4_20_ch4 = adc_sample(CE_ADC_4_20_CH4);
-            }
-            if(adc_channels[CE_ADC_0_5_CH1].enabled){
-                adc_0_5_ch1 = adc_sample(CE_ADC_0_5_CH1);
-            }
-            if(adc_channels[CE_ADC_0_5_CH2].enabled){
-                adc_0_5_ch2 = adc_sample(CE_ADC_0_5_CH2);
-            }
-            if(adc_channels[CE_ADC_0_5_CH3].enabled){
-                adc_0_5_ch3 = adc_sample(CE_ADC_0_5_CH3);
-            }
-            if(adc_channels[CE_ADC_0_5_CH4].enabled){
-                adc_0_5_ch4 = adc_sample(CE_ADC_0_5_CH4);
+                //Add Connected Equipment ADC data to subpacket
+                uint8_t active_channels = 0;
+                if(adc_channels[CE_ADC_4_20_CH1].enabled){
+                    active_channels |= 0x01;
+                    DBGI("4-20mA AIN%d:     %2.2fmA", 1, adc_4_20_ch1);
+                    ct.ui32 = (uint32_t) (adc_4_20_ch1 * 1000);
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_4_20_CH1, &(ct.ui32));
+                }
+                if(adc_channels[CE_ADC_4_20_CH2].enabled){
+                    active_channels |= 0x02;
+                    DBGI("4-20mA AIN%d:     %2.2fmA", 2, adc_4_20_ch2);
+                    ct.ui32 = (uint32_t) (adc_4_20_ch2 * 1000);
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_4_20_CH2, &(ct.ui32));
+                }
+                if(adc_channels[CE_ADC_4_20_CH3].enabled){
+                    active_channels |= 0x04;
+                    DBGI("4-20mA AIN%d:     %2.2fmA", 3, adc_4_20_ch3);
+                    ct.ui32 = (uint32_t) (adc_4_20_ch3 * 1000);
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_4_20_CH3, &(ct.ui32));
+                }
+                if(adc_channels[CE_ADC_4_20_CH4].enabled){
+                    active_channels |= 0x08;
+                    DBGI("4-20mA AIN%d:     %2.2fmA", 4, adc_4_20_ch4);
+                    ct.ui32 = (uint32_t) (adc_4_20_ch4 * 1000);
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_4_20_CH4, &(ct.ui32));
+                }
+                if(adc_channels[CE_ADC_0_5_CH1].enabled){
+                    active_channels |= 0x10;
+                    DBGI("0-5V AIN%d:       %2.2fV", 1, adc_0_5_ch1);
+                    ct.ui32 = (uint32_t) (adc_0_5_ch1 * 1000);
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_0_5_CH1, &(ct.ui32));
+                }
+                if(adc_channels[CE_ADC_0_5_CH2].enabled){
+                    active_channels |= 0x20;
+                    DBGI("0-5V AIN%d:       %2.2fV", 2, adc_0_5_ch2);
+                    ct.ui32 = (uint32_t) (adc_0_5_ch2 * 1000);
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_0_5_CH2, &(ct.ui32));
+                }
+                if(adc_channels[CE_ADC_0_5_CH3].enabled){
+                    active_channels |= 0x40;
+                    DBGI("0-5V AIN%d:       %2.2fV", 3, adc_0_5_ch3);
+                    ct.ui32 = (uint32_t) (adc_0_5_ch3 * 1000);
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_0_5_CH3, &(ct.ui32));
+                }
+                if(adc_channels[CE_ADC_0_5_CH4].enabled){
+                    active_channels |= 0x80;
+                    DBGI("0-5V AIN%d:       %2.2fV", 4, adc_0_5_ch4);
+                    ct.ui32 = (uint32_t) (adc_0_5_ch4 * 1000);
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_0_5_CH4, &(ct.ui32));
+                }
+                if(active_channels != 0x00){
+                    //At least one channel was added, so we add the active_chanels bitfield to the packet
+                    ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_ACTIVE_CHANNELS, &active_channels);
+                }       
+
             }
 
             DBGI("ADC DEINIT");
@@ -792,15 +809,16 @@ void sensorSampleTask(void *pvParameters)
             ce_add_data(&ce_compact_payload, EPCP_SYSTEM_FULL, EPCP_TIME, &ts);
         
             //Convert battery from float to int per spec
-            ct.ui32 = adc_batt * 100;
+            ct.ui32 = (uint32_t) (adc_batt * 100);
             ce_add_data(&ce_compact_payload, EPCP_SYSTEM_FULL, EPCP_BATT, &(ct.ui32));
-        }else{
+        }
+        else{
             ce_add_data(&ce_compact_payload, EPCP_SYSTEM_CON, EPCP_VER, &epcp_ver);
             ce_add_data(&ce_compact_payload, EPCP_SYSTEM_CON, EPCP_MSG_CNT, &frameCounter);
             ce_add_data(&ce_compact_payload, EPCP_SYSTEM_CON, EPCP_TIME, &ts);
 
             //Convert battery from float to int per spec
-            ct.ui32 = adc_batt * 100;
+            ct.ui32 = (uint32_t) (adc_batt * 100);
             ce_add_data(&ce_compact_payload, EPCP_SYSTEM_CON, EPCP_BATT, &(ct.ui32));
         }
 
@@ -812,70 +830,15 @@ void sensorSampleTask(void *pvParameters)
             ce_add_data(&ce_compact_payload, EPCP_CELL, EPCP_IMEI, &(hexIMEI));
             ce_add_data(&ce_compact_payload, EPCP_CELL, EPCP_RSSI, &(parameters.rssi));
             ce_add_data(&ce_compact_payload, EPCP_CELL, EPCP_RSRQ, &(parameters.rsrq));
-        }
-
-        //Add Connected Equipment ADC data to subpacket
-        uint8_t active_channels = 0;
-        if(adc_channels[CE_ADC_4_20_CH1].enabled){
-            active_channels |= 0x01;
-            DBGI("4-20mA AIN%d:     %2.2fmA", 1, adc_4_20_ch1);
-            ct.ui32 = adc_4_20_ch1 * 1000;
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_4_20_CH1, &(ct.ui32));
-        }
-        if(adc_channels[CE_ADC_4_20_CH2].enabled){
-            active_channels |= 0x02;
-            DBGI("4-20mA AIN%d:     %2.2fmA", 2, adc_4_20_ch2);
-            ct.ui32 = adc_4_20_ch2 * 1000;
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_4_20_CH2, &(ct.ui32));
-        }
-        if(adc_channels[CE_ADC_4_20_CH3].enabled){
-            active_channels |= 0x04;
-            DBGI("4-20mA AIN%d:     %2.2fmA", 3, adc_4_20_ch3);
-            ct.ui32 = adc_4_20_ch3 * 1000;
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_4_20_CH3, &(ct.ui32));
-        }
-        if(adc_channels[CE_ADC_4_20_CH4].enabled){
-            active_channels |= 0x08;
-            DBGI("4-20mA AIN%d:     %2.2fmA", 4, adc_4_20_ch4);
-            ct.ui32 = adc_4_20_ch4 * 1000;
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_4_20_CH4, &(ct.ui32));
-        }
-        if(adc_channels[CE_ADC_0_5_CH1].enabled){
-            active_channels |= 0x10;
-            DBGI("0-5V AIN%d:       %2.2fV", 1, adc_0_5_ch1);
-            ct.ui32 = adc_0_5_ch1 * 1000;
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_0_5_CH1, &(ct.ui32));
-        }
-        if(adc_channels[CE_ADC_0_5_CH2].enabled){
-            active_channels |= 0x20;
-            DBGI("0-5V AIN%d:       %2.2fV", 2, adc_0_5_ch2);
-            ct.ui32 = adc_0_5_ch2 * 1000;
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_0_5_CH2, &(ct.ui32));
-        }
-        if(adc_channels[CE_ADC_0_5_CH3].enabled){
-            active_channels |= 0x40;
-            DBGI("0-5V AIN%d:       %2.2fV", 3, adc_0_5_ch3);
-            ct.ui32 = adc_0_5_ch3 * 1000;
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_0_5_CH3, &(ct.ui32));
-        }
-        if(adc_channels[CE_ADC_0_5_CH4].enabled){
-            active_channels |= 0x80;
-            DBGI("0-5V AIN%d:       %2.2fV", 4, adc_0_5_ch4);
-            ct.ui32 = adc_0_5_ch4 * 1000;
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_0_5_CH4, &(ct.ui32));
-        }
-        if(active_channels != 0x00){
-            //At least one channel was added, so we add the active_chanels bitfield to the packet
-            ce_add_data(&ce_compact_payload, EPCP_CE, EPCP_ACTIVE_CHANNELS, &active_channels);
-        }             
+        }      
 
         #if SI7021_ACTIVE
         //Add HTU21D / SI7021 data to subpacket
         //Convert TEMP to int per spec
-        ct.i32 = si_temp * 100;
+        ct.i32 = (int32_t) (si_temp * 100);
         ce_add_data(&ce_compact_payload, EPCP_SI7021, EPCP_TEMP, &(ct.ui32));
         //Convert HUM to int per spec
-        ct.i32 = si_hum * 100;
+        ct.i32 = (int32_t) (si_hum * 100);
         ce_add_data(&ce_compact_payload, EPCP_SI7021, EPCP_HUM, &(ct.ui32));
         #endif
 
@@ -901,23 +864,23 @@ void sensorSampleTask(void *pvParameters)
 
         #if ICM20602_ACTIVE
         //Convert data from float to int per spec and add to ICM subpacket
-        ct.i32 = icm_data.accel_x * 100;
+        ct.i32 = (int32_t) (icm_data.accel_x * 100);
         ce_add_data(&ce_compact_payload, EPCP_ICM20602, EPCP_ACCEL_X, &(ct.ui32));
-        ct.i32 = icm_data.accel_y * 100;
+        ct.i32 = (int32_t) (icm_data.accel_y * 100);
         ce_add_data(&ce_compact_payload, EPCP_ICM20602, EPCP_ACCEL_Y, &(ct.ui32));
-        ct.i32 = icm_data.accel_z * 100;
+        ct.i32 = (int32_t) (icm_data.accel_z * 100);
         ce_add_data(&ce_compact_payload, EPCP_ICM20602, EPCP_ACCEL_Z, &(ct.ui32));
-        ct.i32 = icm_data.gyro_x * 100;
+        ct.i32 = (int32_t) (icm_data.gyro_x * 100);
         ce_add_data(&ce_compact_payload, EPCP_ICM20602, EPCP_GYRO_X, &(ct.ui32));
-        ct.i32 = icm_data.gyro_y * 100;
+        ct.i32 = (int32_t) (icm_data.gyro_y * 100);
         ce_add_data(&ce_compact_payload, EPCP_ICM20602, EPCP_GYRO_Y, &(ct.ui32));
-        ct.i32 = icm_data.gyro_z * 100;
+        ct.i32 = (int32_t) (icm_data.gyro_z * 100);
         ce_add_data(&ce_compact_payload, EPCP_ICM20602, EPCP_GYRO_Z, &(ct.ui32));
         #endif
 
         #if VL53L0X_ACTIVE
         //Convert measurement to int per spec and add to TOF subpacket
-        ct.ui32 = vl53l0x_get_data(&tof, &err);
+        ct.ui32 = (uint32_t) vl53l0x_get_data(&tof, &err);
         if(err != NRFX_SUCCESS){
             DBGE("VL53L0X init error!");
         }
@@ -932,6 +895,14 @@ void sensorSampleTask(void *pvParameters)
             //Forward data to cell queue if there is space
             if(xQueueSend(xCellQueue, &local_sensor_data_msg, CELL_QUEUE_TIMEOUT) != pdTRUE){
                 DBGE("Queue Timeout!");
+            }
+
+            // Set flag
+            newDataAdded = true;
+
+            // Resume mqtt task
+            if(strstr( IOT_BROKER_ADDRESS_POST, "mqtt" ) != NULL && PERSISTENT_CONNECT_FLAG != true){
+                vTaskResume( mqttTaskHandle );
             }
         }
         else if(comm_conf == COMM_LORA_ONLY){
@@ -956,72 +927,99 @@ void sensorSampleTask(void *pvParameters)
     vTaskDelete( NULL );
 }
 
-void appendMsgWithGNSS( void )
+void addGnssQueueMsg( bool status )
 {
     //Create message to send to queue
     cell_queue_msg cell_msg;
     static uint32_t prevFixTime = 0;
 
-    if( xQueuePeek( xCellQueue,
-                        &( cell_msg ),
-                        ( TickType_t ) 10 ) == pdTRUE )
+    cellDiag parameters = {'\0'};
+    //Get latest cell values
+    if( queryCellularDiag(&parameters) != CellSuccess )
     {
-        //Read message to append
-        if( xQueueReceive( xCellQueue, &( cell_msg ), ( TickType_t ) 100 ) == pdTRUE )
+        /* retry once */
+        if( queryCellularDiag(&parameters) != CellSuccess )
         {
-            cellDiag parameters = {'\0'};
-            //Get latest cell values
-            if( queryCellularDiag(&parameters) != CELLULAR_SUCCESS )
-            {
-                /* retry once */
-                if( queryCellularDiag(&parameters) != CELLULAR_SUCCESS )
-                {
-                    DBGE("Failed to query cell diagnostic data");
-                    return;
-                }
-            }
-
-            //Set up compact payload
-            epcp_builder_ce ce_compact_payload;
-            epcp_builder_ce_init(&ce_compact_payload);
-
-            //Print GNSS data to debug log
-            DBGI("Lat:%f,Long:%f",parameters.lat_float,parameters.long_float);
-           
-            //Set up data converter
-            union epcp_convert_type ct;
-
-            //Add GNSS data to subpacket
-            if(parameters.fixTime != prevFixTime){           
-                prevFixTime = parameters.fixTime;
-                //Convert LAT from float to int per spec
-                ct.i32 = parameters.lat_float * 10000;
-                ce_add_data(&ce_compact_payload, EPCP_GNSS, EPCP_LAT, &(ct.ui32));
-
-                //Convert LON from float to int per spec
-                ct.i32 = parameters.long_float * 10000;
-                ce_add_data(&ce_compact_payload, EPCP_GNSS, EPCP_LON, &(ct.ui32));
-            }
-
-            //Generate completed packet
-            cell_queue_msg gnss_sensor_data_msg;
-            gnss_sensor_data_msg.size = ce_get_packet(&ce_compact_payload, gnss_sensor_data_msg.data);
-
-            // Generate combined packet */
-            cell_queue_msg combined_sensor_data_msg;
-
-            memcpy(&combined_sensor_data_msg.data[0],&cell_msg.data[0],cell_msg.size);
-            memcpy(&combined_sensor_data_msg.data[cell_msg.size],&gnss_sensor_data_msg.data[0],gnss_sensor_data_msg.size);
-
-            combined_sensor_data_msg.size = ((cell_msg.size)+(gnss_sensor_data_msg.size));
-
-            //Its possible to miss gnss fix if cell service is unable for an extended period and will retry on next gnss interval
-            if(xQueueSendToFront(xCellQueue, &combined_sensor_data_msg, CELL_QUEUE_TIMEOUT) != pdTRUE){
-                DBGE("Queue Timeout!");
-            }
-
-            //Free message
-            epcp_builder_ce_deinit(&ce_compact_payload);            
+            DBGE("Failed to query cell diagnostic data");
+            return;
         }
     }
+
+    /* Ensure new fix by change in timestamp */
+    if(parameters.fixTime == prevFixTime && parameters.gtpLatFloat == 0 || status == false){
+        DBGE("No new fix detected");
+        return;
+    }
+
+    //Set up compact payload
+    epcp_builder_ce ce_compact_payload;
+    epcp_builder_ce_init(&ce_compact_payload);
+
+    //Set up data converter
+    union epcp_convert_type ct;
+
+    // Increment frame counter
+    frameCounter = (uint8_t) (frameCounter + 1);
+
+    // Get time for data packet
+    uint64_t ts = get_time_s();
+
+    ce_add_data(&ce_compact_payload, EPCP_SYSTEM_CON, EPCP_VER, &epcp_ver);
+    ce_add_data(&ce_compact_payload, EPCP_SYSTEM_CON, EPCP_MSG_CNT, &frameCounter);
+    ce_add_data(&ce_compact_payload, EPCP_SYSTEM_CON, EPCP_TIME, &ts);
+    ct.ui32 = ep_bsp_read_battery_voltage() * 100;
+    ce_add_data(&ce_compact_payload, EPCP_SYSTEM_CON, EPCP_BATT, &(ct.ui32));
+
+    //Add Cell data to subpacket
+    char* endptr;
+    uint64_t hexIMEI = strtoull(parameters.imei,&endptr,10); //Convert IMEI from string to number
+    ce_add_data(&ce_compact_payload, EPCP_CELL, EPCP_IMEI, &(hexIMEI));
+    ce_add_data(&ce_compact_payload, EPCP_CELL, EPCP_RSSI, &(parameters.rssi));
+    ce_add_data(&ce_compact_payload, EPCP_CELL, EPCP_RSRQ, &(parameters.rsrq));
+
+    if(parameters.fixTime != prevFixTime || status == false){
+        //Add satellites
+        ce_add_data(&ce_compact_payload, EPCP_GNSS, EPCP_SAT, &(parameters.satellites));
+        //If failed fix then set values to 0
+        if(parameters.fix < 2){
+            parameters.lat_float = 0;
+            parameters.long_float = 0;
+            ce_set_error(&ce_compact_payload,EPCP_GNSS,true);
+        }
+        //Add GNSS data to subpacket    
+        prevFixTime = parameters.fixTime;
+        //Convert LAT from float to int per spec
+        ct.i32 = parameters.lat_float * 100000;
+        ce_add_data(&ce_compact_payload, EPCP_GNSS, EPCP_LAT, &(ct.ui32));
+        //Convert LON from float to int per spec
+        ct.i32 = parameters.long_float * 100000;
+        ce_add_data(&ce_compact_payload, EPCP_GNSS, EPCP_LON, &(ct.ui32));
+    }
+
+    //Add GTP data to subpacket
+    if(parameters.gtpLatFloat != 0){
+        //Convert LAT from float to int per spec
+        ct.i32 = parameters.gtpLatFloat * 100000;
+        ce_add_data(&ce_compact_payload, EPCP_GTP, EPCP_GTP_LAT, &(ct.ui32));
+        //Convert LON from float to int per spec
+        ct.i32 = parameters.gtpLongFloat * 100000;
+        ce_add_data(&ce_compact_payload, EPCP_GTP, EPCP_GTP_LON, &(ct.ui32));
+        //Add accuracy
+        ct.i32 = parameters.gtpAccuracy * 100;
+        ce_add_data(&ce_compact_payload, EPCP_GTP, EPCP_GTP_ACC, &(ct.ui32));
+        //Clear data
+        parameters.gtpLatFloat = 0;
+    }
+
+    //Generate completed packet
+    cell_queue_msg gnss_data_msg;
+    gnss_data_msg.size = ce_get_packet(&ce_compact_payload, gnss_data_msg.data);   
+
+    // Add new queue entry
+    if(xQueueSend(xCellQueue, &gnss_data_msg, CELL_QUEUE_TIMEOUT) != pdTRUE){
+        DBGE("Queue Timeout!");
+    }
+
+    //Free message
+    epcp_builder_ce_deinit(&ce_compact_payload);           
 }

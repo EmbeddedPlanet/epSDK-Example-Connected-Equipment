@@ -1,4 +1,4 @@
-/****************************************************************************     
+/****************************************************************************
  * Copyright (c) 2023 Embedded Planet, Inc.                                 *
  * SPDX-License-Identifier: Apache-2.0                                      *
  *                                                                          *
@@ -21,15 +21,15 @@
  * @author  Embedded Planet, Inc.
  * @author  Dan Maher
  * @date    26 FEB 2024
- * 
+ *
  * @brief This layer, which sits on top of the EP Compact Payload Builder, is accessed by the
  * main application to add sensor data to the final Connected Equipment compact payload packet.
- * 
+ *
  * Built for use with the nRF5 SDK 17.1 and FreeRTOS.
- * 
+ *
  * Versions:
  * 0.0.1 - Initial release.
- * 
+ *
  */
 
 #ifndef EPCP_BUILDER_CE_H
@@ -49,7 +49,7 @@ EPCP payload format per subpacket:
 
 /**
  * @brief Struct that contains the sensor subpackets
- * 
+ *
  */
 typedef struct{
     //Sensor subpackets
@@ -57,8 +57,9 @@ typedef struct{
     epcp_sensor system_con;
     epcp_sensor cell;
     epcp_sensor gnss;
+    epcp_sensor gtp;
     epcp_sensor si7021;
-    epcp_sensor bme680;  
+    epcp_sensor bme680;
     epcp_sensor icm20602;
     epcp_sensor vl53l0x;
     epcp_sensor ce;
@@ -68,6 +69,7 @@ typedef struct{
     bool system_con_active;
     bool cell_active;
     bool gnss_active;
+    bool gtp_active;
     bool si7021_active;
     bool bme680_active;
     bool icm20602_active;
@@ -77,7 +79,7 @@ typedef struct{
 
 /**
  * @brief Used to initialize the epcp_builder_ce struct as well as all subpacket structs.
- * 
+ *
  * @param ce_builder    Pointer to the epcp_builder_ce struct
  */
 void epcp_builder_ce_init(epcp_builder_ce *ce_builder);
@@ -85,14 +87,14 @@ void epcp_builder_ce_init(epcp_builder_ce *ce_builder);
 /**
  * @brief Used to deinitialize the epcp_builder_ce struct as all subpacket structs if going out of scope.
  * If this is not called, the dynamic arrays of the packet and subpackets will not be deallocated.
- * 
+ *
  * @param ce_builder     Pointer to the epcp_builder_ce struct
  */
 void epcp_builder_ce_deinit(epcp_builder_ce *ce_builder);
 
 /**
  * @brief Used to add sensor data to the packet
- * 
+ *
  * @param ce_builder        Pointer to an epcp_builder_ce struct
  * @param sensor_id         Sensor we are adding the data for
  * @param sensor_slot       Sensor slot that we are adding the data into
@@ -104,12 +106,12 @@ EPCP_ERROR_CODE ce_add_data(epcp_builder_ce *ce_builder, EPCP_SENSOR_ID sensor_i
 /**
  * @brief Sets an alarm value as active or inactive for a sensor data slot. For an error bit that
  * applies to the whole sensor subpacket, see set_error()
- * 
+ *
  * Alarms are typically set when a sensor reading violates a set parameter. For example, an environmental sensor
  * might set an alarm bit for temperature when about 25C, and an alarm bit for humidity when above 80%. In contrast,
- * an error bit applies to the whole sensor and typically would indicate an issue with the sensor. For example if 
+ * an error bit applies to the whole sensor and typically would indicate an issue with the sensor. For example if
  * the system was unable to communicate with the sensor.
- * 
+ *
  * @param ce_builder        Pointer to an epcp_builder_ce struct
  * @param sensor_id         Sensor that includes the data that we are adding the alarm to
  * @param sensor_slot       The sensor data slot that the alarm applies to
@@ -121,12 +123,12 @@ EPCP_ERROR_CODE ce_set_alarm(epcp_builder_ce *ce_builder, EPCP_SENSOR_ID sensor_
 /**
  * @brief Sets the error value for a sensor as active or inactive. This applies to the whole sensor
  * packet. For setting alarm bits for a specific sensor data slot, see set_alarm()
- * 
+ *
  * Alarms are typically set when a sensor reading violates a set parameter. For example, an environmental sensor
  * might set an alarm bit for temperature when about 25C, and an alarm bit for humidity when above 80%. In contrast,
- * an error bit applies to the whole sensor and typically would indicate an issue with the sensor. For example if 
+ * an error bit applies to the whole sensor and typically would indicate an issue with the sensor. For example if
  * the system was unable to communicate with the sensor.
- * 
+ *
  * @param ce_builder        Pointer to an epcp_builder_ce struct
  * @param sensor_id         Sensor that includes the data that we are adding the alarm to
  * @param error_status      true if error is active, else false
@@ -136,7 +138,7 @@ EPCP_ERROR_CODE ce_set_error(epcp_builder_ce *ce_builder, EPCP_SENSOR_ID sensor_
 
 /**
  * @brief Retrieves the packet size. The packet size can also be retrieved during packet retrieval with ce_get_packet()
- * 
+ *
  * @param ce_builder        Pointer to an epcp_builder_ce struct
  * @return uint16_t         Size of the completed packet in bytes
  */
@@ -146,11 +148,13 @@ uint16_t ce_get_packet_size(epcp_builder_ce *ce_builder);
  * @brief Generates the final packet consisting of ce sensor subpackets, and returns
  * a pointer to that dynamically created packet.
  *
+ * Note: The packet MUST be deallocated after use with free().
+ *
  * @param ce_builder     Pointer to an epcp_builder_ce struct
- * @param uint8_t*          Pointer to the completed packet
- * @return uint16_t         Size of the completed packet
+ * @param buff           Buffer to copy the completed packet into
+ * @return               Size of the completed packet
  */
-uint16_t ce_get_packet(epcp_builder_ce *ce_builder, char *ret_packet);
+uint16_t ce_get_packet(epcp_builder_ce *ce_builder, uint8_t *buff);
 
 
 #endif

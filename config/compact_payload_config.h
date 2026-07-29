@@ -41,7 +41,7 @@
 #endif
 /* *INDENT-ON* */
 
-#define EPCP_VERSION 0x04   /** < EP Compact Payload V3 */
+#define EPCP_VERSION 0x08   /** < EP Compact Payload V8 */
 
 /**
  * @brief Sensor ID Numbers
@@ -54,16 +54,17 @@
  */
 typedef enum epcp_sensor_id{
     /* Agora Sensors */
-    EPCP_SYSTEM_FULL    = 0x01,
-    EPCP_SYSTEM_CON     = 0x02,
+    EPCP_SYSTEM_FULL= 0x01,
+    EPCP_SYSTEM_CON = 0x02,
     //0x03 - 0x04 reserved for future use
     EPCP_CELL       = 0x05,
     EPCP_GNSS       = 0x06,
-    EPCP_SI7021     = 0x07,
-    EPCP_BME680     = 0x08,
-    EPCP_ICM20602   = 0x09,
-    EPCP_VL53L0X    = 0x0B,
-    EPCP_CE         = 0x0D
+    EPCP_GTP        = 0x07,
+    EPCP_SI7021     = 0x08,
+    EPCP_BME680     = 0x09,
+    EPCP_ICM20602   = 0x0A,
+    EPCP_VL53L0X    = 0x0C,
+    EPCP_CE         = 0x0E
     //0x0E - 0x1F reserved for future use
     /*Customer Sensors (starting at 0x20 through 0x7E) */
     //0x7F reserved for future use
@@ -80,13 +81,13 @@ typedef enum epcp_sensor_packet_size{
     EPCP_SYSTEM_FULL_SIZE   = 19,
     EPCP_SYSTEM_CON_SIZE    = 9,
     EPCP_CELL_SIZE          = 10,
-    EPCP_GNSS_SIZE          = 7,
+    EPCP_GNSS_SIZE          = 10,
+    EPCP_GTP_SIZE           = 13,
     EPCP_SI7021_SIZE        = 6,
     EPCP_BME680_SIZE        = 25,
     EPCP_ICM20602_SIZE      = 14,
     EPCP_VL53L0X_SIZE       = 6,
     //EPCP_CE_SIZE          = xx Connected Equipment size is determined dynamically
-    EPCP_COACH_SIZE         = 9
 } EPCP_SENSOR_PACKET_SIZE;
 
 /** 
@@ -110,8 +111,12 @@ typedef enum epcp_sensor_slot_type{
     EPCP_ICCID,         //Cell ICCID
     EPCP_RSSI,          //Cell RSSI
     EPCP_RSRQ,          //Cell RSRQ
+    EPCP_SAT,           //GNSS Satellites
     EPCP_LAT,           //GNSS Latitude
     EPCP_LON,           //GNSS Longitude
+    EPCP_GTP_LAT,       //GPT Latitidue
+    EPCP_GTP_LON,       //GPT Longitude
+    EPCP_GTP_ACC,       //GTP Accuracy
     EPCP_TIME,          //System time or run time
     EPCP_BATT,          //Battery voltage
     EPCP_TEMP,          //Temperature reading
@@ -128,6 +133,9 @@ typedef enum epcp_sensor_slot_type{
     EPCP_GYRO_X,        //Gyroscope x-axis reading
     EPCP_GYRO_Y,        //Gyroscope y-axis reading
     EPCP_GYRO_Z,        //Gyroscope z-axis reading
+    EPCP_MAG_X,         //Magnetometer x-axis reading
+    EPCP_MAG_Y,         //Magnetometer y-axis reading
+    EPCP_MAG_Z,         //Magnetometer z-axis reading
     EPCP_DIST,          //Distance reading
     EPCP_ACTIVE_CHANNELS,   //Used to indicate the number of channels present in a CE subpacket.
     EPCP_4_20_CH1,      //4-20mA Ch1 reading
