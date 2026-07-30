@@ -1,19 +1,3 @@
-/****************************************************************************                                                                     *
- * Copyright (c) 2026 Embedded Planet, Inc.                                 *
- * SPDX-License-Identifier: Apache-2.0                                      *
- *                                                                          *
- * Licensed under the Apache License, Version 2.0 (the "License");          *
- * you may not use this file except in compliance with the License.         *
- * You may obtain a copy of the License at                                  *
- *                                                                          *
- *     http://www.apache.org/licenses/LICENSE-2.0                           *
- *                                                                          *
- * Unless required by applicable law or agreed to in writing, software      *
- * distributed under the License is distributed on an "AS IS" BASIS,        *
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. *
- * See the License for the specific language governing permissions and      *
- * limitations under the License.                                           *
- ****************************************************************************/
 /**
  * Created on: Sept 1, 2022
  * Created by: golobmichael
@@ -37,6 +21,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "FreeRTOS.h"
+#include "task.h"
 #include "led_helper.h"
 #include "LoRaWAN.h"
 
@@ -94,6 +80,7 @@ typedef enum e_comm_conf{
 
  /* Set in application to one of the above communciation configurations */
 extern uint8_t comm_conf;
+
 //////////////////////////////////////////////////
 /****                                        ****/
 /****               CELLULAR                 ****/
@@ -432,8 +419,6 @@ typedef struct CellularBLEConfig
 
 extern CellularBLEConfig_t pdnConfig;
 
-extern void parse_downlink(void);
-
 typedef struct
 {
     uint8_t  serialNumber[6];                    /* 8 byte serial number */
@@ -467,64 +452,47 @@ extern void mqttTask( void * pvParameters );
 /****                                        ****/
 //////////////////////////////////////////////////
 
-/**< Used to activate/deactivate LoRa in the main application, LoRa is always active on connected equipment
+/**< Used to activate/deactivate LoRa in the main application
  * 
  *   0 = Deactivated
  *   1 = Activated
  */
-#define LORA_ACTIVE     1
+#ifndef LORA_ACTIVE
+    #define LORA_ACTIVE     1
+#endif
 
-#define LORA_QUEUE_TIMEOUT                  pdMS_TO_TICKS(3000)                     /** Time to wait on queue before moving on to the next sample */
+#ifndef LORA_QUEUE_TIMEOUT
+    #define LORA_QUEUE_TIMEOUT                  pdMS_TO_TICKS(3000)                     /** Time to wait on queue before moving on to the next sample */
+#endif
 
 /* LoRa queue size for transmissions */
-#define LORA_QUEUE_SIZE                     6
-
-/* Manually set CE channels and calibration values when using LoRa */
-/* 4-20mA Channels 1-4 */
-#define LORA_4_20_CH_1_ENABLE
-#define LORA_4_20_CH_1_CAL_MIN   "1"
-#define LORA_4_20_CH_1_CAL_MAX   "100"
-#define LORA_4_20_CH_2_ENABLE
-#define LORA_4_20_CH_2_CAL_MIN   "1"
-#define LORA_4_20_CH_2_CAL_MAX   "100"
-//#define LORA_4_20_CH_3_ENABLE
-#define LORA_4_20_CH_3_CAL_MIN   "1"
-#define LORA_4_20_CH_3_CAL_MAX   "100"
-//#define LORA_4_20_CH_4_ENABLE
-#define LORA_4_20_CH_4_CAL_MIN   "1"
-#define LORA_4_20_CH_4_CAL_MAX   "100"
-/* 0-5V Channels 1-4 */
-#define LORA_0_5_CH_1_ENABLE
-#define LORA_0_5_CH_1_CAL_MIN   "1"
-#define LORA_0_5_CH_1_CAL_MAX   "100"
-//#define LORA_0_5_CH_2_ENABLE
-#define LORA_0_5_CH_2_CAL_MIN   "1"
-#define LORA_0_5_CH_2_CAL_MAX   "100"
-//#define LORA_0_5_CH_3_ENABLE
-#define LORA_0_5_CH_3_CAL_MIN   "1"
-#define LORA_0_5_CH_3_CAL_MAX   "100"
-//#define LORA_0_5_CH_4_ENABLE
-#define LORA_0_5_CH_4_CAL_MIN   "1"
-#define LORA_0_5_CH_4_CAL_MAX   "100"
+#ifndef LORA_QUEUE_SIZE
+    #define LORA_QUEUE_SIZE                     6
+#endif
 
 /**
  * @brief Default region is set to US915. Application can choose to configure a different region
  * by setting the appropirate compiler flag for the region and setting this config to the corresponding
  * region.
  */
-#define LORAWAN_REGION    LORAMAC_REGION_US915
-
+#ifndef LORAWAN_REGION
+    #define LORAWAN_REGION    LORAMAC_REGION_US915
+#endif
 
 /**
  * @brief LoRa MAC layer port used by the application.
  * Downlink unicast messages should be send to this port number.
  */
-#define LORAWAN_APP_PORT                       ( 15 )
+#ifndef LORAWAN_APP_PORT
+    #define LORAWAN_APP_PORT                       ( 15 )
+#endif
 
 /**
  * @brief Should send confirmed messages (with an acknowledgment) or not.
  */
-#define LORAWAN_CONFIRMED_SEND                 ( 1 )
+#ifndef LORAWAN_CONFIRMED_SEND
+    #define LORAWAN_CONFIRMED_SEND                 ( 1 )
+#endif
 
 /**
  * @brief Defines a random jitter bound in milliseconds for application data transmission duty cycle.
@@ -532,7 +500,9 @@ extern void mqttTask( void * pvParameters );
  * This allows devices to space their transmissions slighltly between each other in cases like all devices reboots and tries to
  * join server at same time.
  */
-#define LORAWAN_APPLICATION_JITTER_MS          ( 500 )
+#ifndef LORAWAN_APPLICATION_JITTER_MS
+    #define LORAWAN_APPLICATION_JITTER_MS          ( 500 )
+#endif
 
 
 /**
@@ -541,7 +511,9 @@ extern void mqttTask( void * pvParameters );
  * As per LoRaWAN spec, class A end device uses two receive windows slots after sending an uplink packet. For US915the max window duration is
  * 3000 ms and the second RX window max delay is 2 seconds. So setting the receive timeout to higher than the receive window slots.
  */
-#define CLASSA_RECEIVE_WINDOW_DURATION_MS    ( 6000 )
+#ifndef CLASSA_RECEIVE_WINDOW_DURATION_MS
+    #define CLASSA_RECEIVE_WINDOW_DURATION_MS    ( 6000 )
+#endif
 
 /* LoRa transmission interval in seconds */
 //#define MIN_TRANS_INTERVAL    60U
@@ -599,10 +571,93 @@ static const uint8_t appKeyDefault[ 16 ] = { 0x89, 0xF1, 0x18, 0x7D, 0xC0, 0x07,
  *   0 = Deactivated
  *   1 = Activated
  */
-#define BLE_ACTIVE     0
+//#define BLE_ACTIVE     0
 
 /** < BLE TX power boost in dBm. For details, see sd_ble_gap_tx_power_set() in ble_gap.h */
 #define BLE_TX_POWER_BOOST      8
+
+
+///////////////////////////////////////
+/**          BLE PERIPHERAL         **/
+///////////////////////////////////////
+
+/**< Name of device. Will be included in the advertising data. */
+#define DEVICE_NAME "EP_DEV"
+
+/**< Manufacturer. Will be passed to Device Information Service. */
+#define MANUFACTURER_NAME   "Embedded_Planet_Inc"
+
+/**< When activated, the peripheral will generate and serve up the BLE Cell Service via its GATT server
+ * 
+ *   0 = Deactivated
+ *   1 = Activated
+ */
+#define BLE_SERVICE_CELL      0
+
+/**< When activated, the peripheral will generate and serve up the BLE System Service via its GATT server
+ * 
+ *   0 = Deactivated
+ *   1 = Activated
+ */
+#define BLE_SERVICE_SYSTEM      0
+
+/**< When activated, the peripheral will generate and serve up the BLE BME680 Service via its GATT server
+ * 
+ *   0 = Deactivated
+ *   1 = Activated
+ */
+#define BLE_SERVICE_BME680      0
+
+/**< When activated, the peripheral will generate and serve up the BLE ICM20602 Service via its GATT server
+ * 
+ *   0 = Deactivated
+ *   1 = Activated
+ */
+#define BLE_SERVICE_ICM20602    0    
+
+/** < Manufacturer ID. 0xFFFF only to be used during development */
+#define MANUFACTURER_ID     0xFFFF
+
+ /**< Device appearance to add to adv data. 0x0540 is generic sensor, see BLE spec for full list */
+#define DEVICE_APPEARANCE   0x0540
+
+/**< The advertising interval in units of 0.625 ms */
+#define APP_ADV_INTERVAL    300
+
+/**< The advertising duration in units of 10 milliseconds. */
+#define APP_ADV_DURATION    3000
+
+/**< The wait time between advertising sessions, argument in milliseconds. */
+#define APP_ADV_WAIT    pdMS_TO_TICKS(60000)
+
+/**< When activated, the peripheral will advertise continiously when not connected to a central device.
+ * 
+ *   0 = Deactivated (perform intermittent advertising by following APP_ADV_DURATION and APP_ADV_WAIT)
+ *   1 = Activated (perform continuous advertising by auto-restarting immediately after timeout)  
+ */
+#define APP_CONT_ADV    0
+
+/**< Minimum acceptable connection interval */
+#define MIN_CONN_INTERVAL   MSEC_TO_UNITS(100, UNIT_1_25_MS)
+
+ /**< Maximum acceptable connection interval */
+#define MAX_CONN_INTERVAL   MSEC_TO_UNITS(200, UNIT_1_25_MS)
+
+/**< Slave latency. */
+#define SLAVE_LATENCY   0
+
+/**< Connection supervisory timeout (4 seconds). */
+#define CONN_SUP_TIMEOUT    MSEC_TO_UNITS(4000, UNIT_10_MS)
+
+/**< Time in ms from initiating event (connect or start of notification) to first time sd_ble_gap_conn_param_update is called. */
+#define FIRST_CONN_PARAMS_UPDATE_DELAY  5000
+
+/**< Time in ms between each call to sd_ble_gap_conn_param_update after the first call */
+#define NEXT_CONN_PARAMS_UPDATE_DELAY   30000
+
+/**< Number of attempts before giving up the connection parameter negotiation. */
+#define MAX_CONN_PARAMS_UPDATE_COUNT    3
+
 
 /////////////////////////////////////////////////
 /**   BLE CENTRAL - AGORA SERVICE INTERFACE   **/
@@ -659,6 +714,24 @@ static const uint8_t appKeyDefault[ 16 ] = { 0x89, 0xF1, 0x18, 0x7D, 0xC0, 0x07,
 
 /** < Time to wait on queue before moving on to the next sample */
 #define BLE_JSON_QUEUE_TIMEOUT  pdMS_TO_TICKS(3000)
+
+
+//////////////////////////////////////////////////
+/****                                        ****/
+/****                BUTTON                  ****/
+/****                                        ****/
+//////////////////////////////////////////////////
+
+/* < Delay in ms for debouncing the button */
+#define DEBOUNCE_DELAY      pdMS_TO_TICKS(80)        
+
+/* < Upon button release, the timer is compared with this value to determine whether to trigger
+    the short button push callback or the long push callback */
+#define BTN_LONG_PUSH_DURATION          3000
+
+/* < The timer is compared with this value to determine whether to trigger the very long push callback*/
+#define BTN_VERY_LONG_PUSH_DURATION     10000 
+
 
 //////////////////////////////////////////////////
 /****                                        ****/

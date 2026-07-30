@@ -513,20 +513,6 @@ extern CellStatus_t azureRegenerateSaSToken(uint8_t *endpointAddr, uint32_t expi
 extern void runAzureMqttTlsTask( uint8_t *endpointAddr, uint8_t *pathPrefix, uint8_t* pathSuffix, bool tokenInPath, uint8_t securityType, bool persistent, uint32_t gnssInterval, uint32_t gnssTimeout, bool gnssStatus );
 
 /**
- * @brief Close non persistent mqtt cell connection
- * 
- * @return enum return.
- */
-extern CellStatus_t closeMQTTCellular( void );
-
-/**
- * @brief Get MQTT Connection status
- * 
- * @return enum return.
- */
-extern CellStatus_t statusMQTTCellular( uint8_t *endpointAddr );
-
-/**
  * @brief Query cellular diagnostics
  *
  * @param[in] cellTransInt Interval to transmit cellular data.
