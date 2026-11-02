@@ -4532,11 +4532,11 @@
 #endif
 
 #ifndef SEND_LOG_OVER_UART
-#define SEND_LOG_OVER_UART 0
+#define SEND_LOG_OVER_UART 1
 #endif
 
 #ifndef SEND_LOG_OVER_SWO
-#define SEND_LOG_OVER_SWO 1
+#define SEND_LOG_OVER_SWO 0
 #endif
 
 // <o> NRFX_TWI_DEFAULT_CONFIG_FREQUENCY  - Frequency

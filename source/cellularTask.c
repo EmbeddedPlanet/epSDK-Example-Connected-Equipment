@@ -100,7 +100,7 @@ void CellularTask( void * pvParameters )
         cellStatus = CellGeneralFail;
         
         /* Wait for item in queue */
-        if(newDataAdded == true && xQueuePeek(xCellQueue, NULL, 0) == pdTRUE){
+        if(newDataAdded == true){
             /* Init cell UART */
             init_uart(TASK_2);
 
@@ -268,7 +268,7 @@ void CellularTask( void * pvParameters )
             }
             
             /* Run Thingsboard FOTA if detected, currently only supported on http */
-            if(fotaAvailable == true && ( IOT_BROKER_ADDRESS_GET, "thingsboard" ) != NULL && ( IOT_BROKER_ADDRESS_GET, "http://" ) != NULL){
+            if(fotaAvailable == true && strstr( IOT_BROKER_ADDRESS_GET, "thingsboard" ) != NULL && strstr( IOT_BROKER_ADDRESS_GET, "http://" ) != NULL){
                 runThingsboardFOTA(IOT_BROKER_ADDRESS_GET, SERVER_ADDR_PREFIX_GET, SERVER_ADDR_SUFFIX_FOTA);
             }
             else if(strstr( IOT_BROKER_ADDRESS_GET, "amazonaws" ) != NULL && strstr( IOT_BROKER_ADDRESS_POST, "mqtts://" ) != NULL){
