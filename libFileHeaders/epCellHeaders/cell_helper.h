@@ -117,7 +117,7 @@
  * @brief Define number of HTTP Attributes needed
  * 
  */
-#define num_HTTP_ATTRIBUTES             5
+#define num_HTTP_ATTRIBUTES             30
 
 /**
  * @brief Max attribute length for cell http get

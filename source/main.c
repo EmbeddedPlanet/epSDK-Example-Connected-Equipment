@@ -53,7 +53,6 @@
 //#include "ep_ble_central.h"
 #include "htu21d.h"
 #include "vl53l0x.h"
-#include "bme680.h"
 #include "icm20602.h"
 #include "mcp23008.h"
 #include "sc16is750.h"
@@ -72,7 +71,6 @@
 //Activate / deactivate onboard sensors
 #define SI7021_ACTIVE   1
 #define VL53L0X_ACTIVE  0
-#define BME680_ACTIVE   0
 #define ICM20602_ACTIVE 1
 
 #define mainLED_TASK_STACK_SIZE             128
@@ -583,9 +581,7 @@ void sensorSampleTask(void *pvParameters)
         // Sensor Initialize
         #if ICM20602_ACTIVE
         icm20602_init(&icm, ICM20602_ADDR_LOW, twi);
-        #endif 
-
-        parseDownlink();
+        #endif
 
         uint64_t ts = get_time_s();
 
@@ -600,18 +596,6 @@ void sensorSampleTask(void *pvParameters)
         }
         float si_temp, si_hum;
         htu21_read_temperature_and_relative_humidity(&si_temp, &si_hum);
-        #endif
-        
-        #if BME680_ACTIVE
-        bme680_sensor_data bme_data;
-        bme680_init(twi, BSEC_SAMPLE_RATE_LP, 0.0f);
-        //Get new BME680 data if available
-        if(xSemaphoreTake(xBme680DataReadySemaphore, pdMS_TO_TICKS(5000))){
-            bme_data = bme680_get_latest_data();
-        }else{
-            DBGI("BME680 data not available!");
-        }
-        vTaskDelete(bme_thread_data);
         #endif
 
         #if ICM20602_ACTIVE
@@ -651,6 +635,9 @@ void sensorSampleTask(void *pvParameters)
                 DBGE("ADC init failure! Err: %d", err);
             }
             else{
+                // Parse downlink right before ADC sampling
+                parseDownlink();
+
                 //Add System data to subpacket
                 adc_batt = adc_sample(CE_ADC_BATT);
 
@@ -782,26 +769,6 @@ void sensorSampleTask(void *pvParameters)
         //Convert HUM to int per spec
         ct.i32 = si_hum * 100;
         compact_payload_add_data(EPCP_SI7021, EPCP_HUM, &(ct.ui32));
-        #endif
-
-        #if BME680_ACTIVE
-        //Convert data from to int per spec and add to BME subpacket
-        ct.i32 = bme_data.temp * 100;
-        compact_payload_add_data(EPCP_BME680, EPCP_TEMP, &(ct.ui32));
-        ct.i32 = bme_data.raw_pressure * 100;
-        compact_payload_add_data(EPCP_BME680, EPCP_PRES, &(ct.ui32));
-        ct.ui32 = bme_data.humidity * 100;
-        compact_payload_add_data(EPCP_BME680, EPCP_HUM, &(ct.ui32));
-        ct.ui32 = bme_data.raw_gas * 100;
-        compact_payload_add_data(EPCP_BME680, EPCP_GAS, &(ct.ui32));
-        ct.ui32 = bme_data.co2_equivalent * 100;
-        compact_payload_add_data(EPCP_BME680, EPCP_CO2, &(ct.ui32));
-        ct.ui32 = bme_data.breath_voc_equivalent * 100;
-        compact_payload_add_data(EPCP_BME680, EPCP_BREATH, &(ct.ui32));
-        ct.ui32 = bme_data.iaq;
-        compact_payload_add_data(EPCP_BME680, EPCP_IAQ_SCORE, &(ct.ui32));
-        ct.ui32 = bme_data.iaq_accuracy;
-        compact_payload_add_data(EPCP_BME680, EPCP_IAQ_ACCURACY, &(ct.ui32));
         #endif
 
         #if ICM20602_ACTIVE
